@@ -1,0 +1,23 @@
+
+## `.gitignore`
+```gitignore
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright browsers cache (optional; usually stored outside repo)
+# If it ends up inside, ignore it:
+**/playwright/.cache/
