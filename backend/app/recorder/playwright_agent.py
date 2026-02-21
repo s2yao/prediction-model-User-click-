@@ -15,7 +15,6 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-
 INJECTED_SCRIPT = r"""
 (() => {
   const now = () => Date.now();
@@ -97,6 +96,31 @@ INJECTED_SCRIPT = r"""
   };
 
   // ---- STATE snapshots ("what actions are currently available") ----
+  // Centralized config so state-definition is easy to modify.
+  const STATE_SNAPSHOT_CONFIG = {
+    // What elements define "state"?
+    selector: "[data-testid]",
+    keyAttr: "data-testid",
+
+    // Limits / behavior
+    limit: 60,
+    allowEmpty: false,          // don't emit "(no testids)" states by default
+    debounceMs: 30,             // coalesce multiple triggers close together
+
+    // Delays so we capture POST-React-commit DOM
+    delays: {
+      initialMs: 80,            // page ready / first paint (hydration)
+      postActionMs: 25,         // after click / shortcut
+      navMs: 60                 // after url_changed
+    },
+
+    // If empty, retry (helps Next.js hydration)
+    retryIfEmpty: {
+      attempts: 10,
+      delayMs: 80
+    }
+  };
+
   const isVisible = (el) => {
     try {
       if (!el || el.nodeType !== 1) return false;
@@ -112,45 +136,66 @@ INJECTED_SCRIPT = r"""
     }
   };
 
-  const collectStateTestids = (limit = 60) => {
+  const collectStateKeys = (cfg) => {
     const out = [];
     const seen = new Set();
-    const els = Array.from(document.querySelectorAll("[data-testid]"));
+
+    const els = Array.from(document.querySelectorAll(cfg.selector));
     for (const el of els) {
-      const t = el.getAttribute && el.getAttribute("data-testid");
-      if (!t || seen.has(t)) continue;
+      const v = el.getAttribute && el.getAttribute(cfg.keyAttr);
+      if (!v) continue;
+      if (seen.has(v)) continue;
       if (!isVisible(el)) continue;
-      seen.add(t);
-      out.push(String(t));
-      if (out.length >= limit) break;
+
+      seen.add(v);
+      out.push(String(v));
+      if (out.length >= cfg.limit) break;
     }
+
     out.sort();
     return out;
   };
 
-  const emit_state_snapshot = (reason) => {
+  const emit_state_snapshot = (reason, attempt = 0) => {
     try {
-      const testids = collectStateTestids(60);
+      const cfg = STATE_SNAPSHOT_CONFIG;
+      const testids = collectStateKeys(cfg);
+
+      // If empty and not allowed, retry a few times (for hydration/async render)
+      if (!cfg.allowEmpty && testids.length === 0) {
+        if (attempt < cfg.retryIfEmpty.attempts) {
+          setTimeout(() => emit_state_snapshot(reason, attempt + 1), cfg.retryIfEmpty.delayMs);
+        }
+        return; // skip emitting empty snapshots
+      }
+
       emit("STATE_SNAPSHOT", {
         reason: reason || null,
         testids,
-        n: testids.length,
+        n: testids.length
       });
     } catch {}
   };
 
-  const schedule_state_snapshot = (reason) => {
-    // Important: schedule after the current event finishes so React/SPA state
-    // has a chance to commit and the DOM reflects the *post-action* state.
-    setTimeout(() => emit_state_snapshot(reason), 0);
+  let _stateTimer = null;
+
+  const schedule_state_snapshot = (reason, delayMs) => {
+    try {
+      const cfg = STATE_SNAPSHOT_CONFIG;
+      const d = (typeof delayMs === "number") ? delayMs : cfg.debounceMs;
+
+      if (_stateTimer) clearTimeout(_stateTimer);
+      _stateTimer = setTimeout(() => {
+        _stateTimer = null;
+        emit_state_snapshot(reason, 0);
+      }, d);
+    } catch {}
   };
 
-  // After any click, capture the resulting post-click state.
-  document.addEventListener(
-    "click",
-    () => schedule_state_snapshot("after_click"),
-    true
-  );
+  // After any click, capture the resulting post-click state (after React commit)
+  document.addEventListener("click", () => {
+    schedule_state_snapshot("after_click", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
+  }, true);
 
   document.addEventListener("pointerdown", (e) => {
     const path = (typeof e.composedPath === "function") ? e.composedPath() : null;
@@ -173,7 +218,7 @@ INJECTED_SCRIPT = r"""
     const combo = safeKeyCombo(e);
     if (!combo) return;
     emit("KEY_SHORTCUT", { combo });
-    schedule_state_snapshot("after_shortcut");
+    schedule_state_snapshot("after_shortcut", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
   }, true);
 
   const origPush = history.pushState;
@@ -181,7 +226,7 @@ INJECTED_SCRIPT = r"""
 
   const navChanged = (from, to) => {
     emit("URL_CHANGED", { from, to });
-    schedule_state_snapshot("url_changed");
+    schedule_state_snapshot("url_changed", STATE_SNAPSHOT_CONFIG.delays.navMs);
   };
 
   history.pushState = function (...args) {
@@ -231,7 +276,7 @@ INJECTED_SCRIPT = r"""
   else window.addEventListener("DOMContentLoaded", startMO);
 
   emit("PAGE_READY", { readyState: document.readyState });
-  schedule_state_snapshot("page_ready");
+  schedule_state_snapshot("page_ready", STATE_SNAPSHOT_CONFIG.delays.initialMs);
 })();
 """
 
