@@ -4,7 +4,7 @@ import { memo, useMemo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 
 type NodeData = {
-  kind: "NAV" | "TAB" | "CLICK" | "DOM" | "OTHER";
+  kind: "NAV" | "TAB" | "CLICK" | "SHORTCUT" | "DOM" | "STATE" | "OTHER";
   label: string;
   count: number;
 };
@@ -15,13 +15,14 @@ const hiddenHandleStyle: React.CSSProperties = {
   opacity: 0,
   border: "none",
   background: "transparent",
-  pointerEvents: "none"
+  pointerEvents: "none",
 };
 
 function parseLabel(kind: NodeData["kind"], label: string) {
-  const [l1Raw, l2Raw] = (label || "").split("\n");
-  const l1 = (l1Raw || "").trim();
-  const l2 = (l2Raw || "").trim();
+  const lines = (label || "").split("\n");
+  const l1 = (lines[0] || "").trim();
+  const l2 = (lines[1] || "").trim();
+  const l3 = (lines[2] || "").trim();
 
   if (kind === "CLICK") {
     const afterBracket = l1.includes("]") ? l1.split("]").slice(1).join("]").trim() : l1;
@@ -30,13 +31,14 @@ function parseLabel(kind: NodeData["kind"], label: string) {
 
     const human = unlabeled ? "unlabeled element" : (parts[0] || afterBracket || "Click");
     const hint = unlabeled ? "" : (parts[1] ? `testid=${parts[1]}` : "");
-
     return { type: "Click", human, hint, path: l2 };
   }
 
   if (kind === "NAV") return { type: "Navigate", human: l2 || l1, hint: "", path: l2 };
-  if (kind === "TAB") return { type: "Tab", human: l2 || l1, hint: "", path: l2 };
-  if (kind === "DOM") return { type: "DOM", human: "DOM change", hint: "", path: l2 };
+  if (kind === "TAB") return { type: "Tab (context)", human: "tab focused", hint: "", path: l2 || l1 };
+  if (kind === "DOM") return { type: "DOM (context)", human: "DOM change", hint: "", path: l2 };
+  if (kind === "STATE") return { type: "State", human: l2 || "(no affordances)", hint: "", path: l3 || "" };
+  if (kind === "SHORTCUT") return { type: "Shortcut", human: l1 || l2, hint: "", path: l2 || l3 };
 
   return { type: kind, human: l1 || l2, hint: "", path: l2 };
 }
@@ -44,29 +46,30 @@ function parseLabel(kind: NodeData["kind"], label: string) {
 function ActionNode({ data }: NodeProps<NodeData>) {
   const parsed = useMemo(() => parseLabel(data.kind, data.label), [data.kind, data.label]);
 
+  const isContext = data.kind === "DOM" || data.kind === "TAB";
+
   const box =
     data.kind === "NAV"
       ? "rounded-full"
-      : data.kind === "TAB"
-      ? "rounded-xl"
+      : data.kind === "STATE"
+      ? "rounded-full"
       : data.kind === "CLICK"
       ? "rounded-2xl"
-      : "rounded-full";
+      : "rounded-xl";
 
-  const tone =
-    data.kind === "DOM"
-      ? "bg-white/5 border-white/10 text-white/70"
-      : "bg-black/35 border-white/12 text-white";
+  const tone = isContext
+    ? "bg-white/5 border-white/10 text-white/70"
+    : "bg-black/35 border-white/12 text-white";
 
-  const padding = data.kind === "DOM" ? "px-3 py-2" : "px-4 py-3";
+  const padding = isContext ? "px-3 py-2" : "px-4 py-3";
 
   return (
     <div
       className={`${box} ${tone} border ${padding} shadow-sm`}
       style={{
-        minWidth: data.kind === "DOM" ? 170 : 240,
-        maxWidth: data.kind === "DOM" ? 260 : 520,
-        width: "fit-content"
+        minWidth: isContext ? 190 : 240,
+        maxWidth: isContext ? 320 : 520,
+        width: "fit-content",
       }}
     >
       <Handle type="target" position={Position.Left} style={hiddenHandleStyle} />
@@ -80,7 +83,7 @@ function ActionNode({ data }: NodeProps<NodeData>) {
           </div>
         </div>
 
-        <div className={data.kind === "DOM" ? "mt-1 text-white/70" : "mt-2"}>
+        <div className={isContext ? "mt-1 text-white/70" : "mt-2"}>
           <div className="font-medium whitespace-pre-wrap break-words">{parsed.human}</div>
         </div>
 

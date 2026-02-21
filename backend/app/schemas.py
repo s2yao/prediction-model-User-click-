@@ -12,9 +12,10 @@ EventType = Literal[
     "TAB_CREATED",
     "TAB_CLOSED",
     "DOM_MUTATION",
+    "STATE_SNAPSHOT",
 ]
 
-ActionKind = Literal["CLICK", "SHORTCUT", "NAV", "TAB", "DOM", "OTHER"]
+ActionKind = Literal["CLICK", "SHORTCUT", "NAV", "TAB", "DOM", "STATE", "OTHER"]
 
 
 class RawEvent(BaseModel):
@@ -81,7 +82,10 @@ class StateResponse(BaseModel):
 
 class PredictResponse(BaseModel):
     ok: bool
+    # The node used as the prediction context (workflow-only; DOM/TAB excluded).
     context_node: Optional[str]
+    # Full metadata for the context node (for UI display).
+    context: Optional[GraphNode] = None
     predictions: list[GraphNode]
 
 

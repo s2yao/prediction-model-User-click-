@@ -96,6 +96,62 @@ INJECTED_SCRIPT = r"""
     } catch {}
   };
 
+  // ---- STATE snapshots ("what actions are currently available") ----
+  const isVisible = (el) => {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      const r = el.getBoundingClientRect();
+      if (!r || r.width <= 0 || r.height <= 0) return false;
+      const cs = window.getComputedStyle(el);
+      if (!cs) return false;
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      if (Number(cs.opacity || "1") <= 0) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const collectStateTestids = (limit = 60) => {
+    const out = [];
+    const seen = new Set();
+    const els = Array.from(document.querySelectorAll("[data-testid]"));
+    for (const el of els) {
+      const t = el.getAttribute && el.getAttribute("data-testid");
+      if (!t || seen.has(t)) continue;
+      if (!isVisible(el)) continue;
+      seen.add(t);
+      out.push(String(t));
+      if (out.length >= limit) break;
+    }
+    out.sort();
+    return out;
+  };
+
+  const emit_state_snapshot = (reason) => {
+    try {
+      const testids = collectStateTestids(60);
+      emit("STATE_SNAPSHOT", {
+        reason: reason || null,
+        testids,
+        n: testids.length,
+      });
+    } catch {}
+  };
+
+  const schedule_state_snapshot = (reason) => {
+    // Important: schedule after the current event finishes so React/SPA state
+    // has a chance to commit and the DOM reflects the *post-action* state.
+    setTimeout(() => emit_state_snapshot(reason), 0);
+  };
+
+  // After any click, capture the resulting post-click state.
+  document.addEventListener(
+    "click",
+    () => schedule_state_snapshot("after_click"),
+    true
+  );
+
   document.addEventListener("pointerdown", (e) => {
     const path = (typeof e.composedPath === "function") ? e.composedPath() : null;
     const target = (path && path[0] && path[0].nodeType === 1) ? path[0] : e.target;
@@ -117,12 +173,16 @@ INJECTED_SCRIPT = r"""
     const combo = safeKeyCombo(e);
     if (!combo) return;
     emit("KEY_SHORTCUT", { combo });
+    schedule_state_snapshot("after_shortcut");
   }, true);
 
   const origPush = history.pushState;
   const origReplace = history.replaceState;
 
-  const navChanged = (from, to) => emit("URL_CHANGED", { from, to });
+  const navChanged = (from, to) => {
+    emit("URL_CHANGED", { from, to });
+    schedule_state_snapshot("url_changed");
+  };
 
   history.pushState = function (...args) {
     const from = location.href;
@@ -171,6 +231,7 @@ INJECTED_SCRIPT = r"""
   else window.addEventListener("DOMContentLoaded", startMO);
 
   emit("PAGE_READY", { readyState: document.readyState });
+  schedule_state_snapshot("page_ready");
 })();
 """
 
