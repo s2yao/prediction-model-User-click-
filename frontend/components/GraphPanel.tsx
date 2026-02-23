@@ -36,7 +36,7 @@ function clamp(n: number, a: number, b: number) {
 }
 
 function laneForKind(kind: string) {
-  if (kind === "NAV" || kind === "TAB") return 0;
+  if (kind === "NAV" || kind === "TAB" || kind === "STATE") return 0;
   if (kind === "CLICK") return 1;
   if (kind === "DOM") return 2;
   return 2;
@@ -45,10 +45,13 @@ function laneForKind(kind: string) {
 function edgeColorFor(srcKind: string) {
   if (srcKind === "NAV") return "rgba(130,200,255,1)";
   if (srcKind === "TAB") return "rgba(200,160,255,1)";
+  if (srcKind === "STATE") return "rgba(255,230,170,1)";
   if (srcKind === "CLICK") return "rgba(170,255,190,1)";
   if (srcKind === "DOM") return "rgba(200,200,200,1)";
   return "rgba(220,220,220,1)";
 }
+
+type RawEdge = GraphSnapshot["edges"][number];
 
 export default function GraphPanel() {
   const graph = useAppStore((s) => s.graph);
@@ -58,7 +61,9 @@ export default function GraphPanel() {
   const rfRef = useRef<ReactFlowInstance | null>(null);
 
   // UI controls
-  const [hideDom, setHideDom] = useState(false);
+  const [hideDom, setHideDom] = useState(true);          // ✅ default on while debugging
+  const [hideTabs, setHideTabs] = useState(true);        // ✅ Option A: treat TAB as context
+  const [hideStates, setHideStates] = useState(false);
   const [hideUnlabeledClicks, setHideUnlabeledClicks] = useState(true);
   const [topKEdges, setTopKEdges] = useState(60);
   const [labelMode, setLabelMode] = useState<"none" | "n" | "auto" | "full">("auto");
@@ -69,8 +74,6 @@ export default function GraphPanel() {
 
   // fullscreen
   const [isFullscreen, setIsFullscreen] = useState(false);
-
-  // when true, we will fit as soon as size + nodes are stable
   const needsFitRef = useRef(false);
 
   useEffect(() => {
@@ -104,13 +107,10 @@ export default function GraphPanel() {
     rfRef.current?.fitView({ padding: 0.2, duration: 220 });
   }
 
-  // Track fullscreen state
   useEffect(() => {
     const onFsChange = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
-
-      // Entering fullscreen => we want one good fit after size settles + nodes committed
       if (fs) needsFitRef.current = true;
     };
 
@@ -118,7 +118,6 @@ export default function GraphPanel() {
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
-  // ResizeObserver: when fullscreen, wait until wrapper has real stable size, then fit once.
   useEffect(() => {
     const el = wrapperRef.current;
     if (!el) return;
@@ -127,7 +126,6 @@ export default function GraphPanel() {
       if (!document.fullscreenElement) return;
       if (!needsFitRef.current) return;
 
-      // Debounce to end of layout tick
       requestAnimationFrame(() => {
         rfRef.current?.fitView({ padding: 0.2, duration: 250 });
         needsFitRef.current = false;
@@ -138,7 +136,6 @@ export default function GraphPanel() {
     return () => ro.disconnect();
   }, []);
 
-  // When nodes/edges update while fullscreen, if we still need a fit, do it after commit.
   useEffect(() => {
     if (!document.fullscreenElement) return;
     if (!needsFitRef.current) return;
@@ -147,25 +144,26 @@ export default function GraphPanel() {
       rfRef.current?.fitView({ padding: 0.2, duration: 250 });
       needsFitRef.current = false;
     });
-  }, [isFullscreen]); // keep small; resize observer + manual fit handle the rest
+  }, [isFullscreen]);
 
   const { nodes, edges, minimapColors } = useMemo(() => {
     const g = graph;
     if (!g) return { nodes: [] as Node[], edges: [] as Edge[], minimapColors: new Map<string, string>() };
 
-    // raw -> safe id
+    const nodeById = new Map<string, GraphSnapshot["nodes"][number]>();
     const toSafe = new Map<string, string>();
     const kindByRaw = new Map<string, string>();
     const countByRaw = new Map<string, number>();
 
     for (const n of g.nodes) {
+      nodeById.set(n.id, n);
       toSafe.set(n.id, `n_${hashId(n.id)}`);
       kindByRaw.set(n.id, n.kind);
       countByRaw.set(n.id, n.count);
     }
 
-    // filters on nodes
-    const visibleRawNodes = g.nodes
+    // ---- Hard filters (remove from universe) ----
+    const hardNodes = g.nodes
       .filter((n) => !(hideDom && n.kind === "DOM"))
       .filter((n) => {
         if (!hideUnlabeledClicks) return true;
@@ -173,39 +171,135 @@ export default function GraphPanel() {
         return !n.label.includes("(no label)");
       });
 
-    const visibleRawSet = new Set(visibleRawNodes.map((n) => n.id));
+    const hardSet = new Set(hardNodes.map((n) => n.id));
 
-    // filter + rank edges (topK by frequency)
-    const rawEdges = g.edges
-      .filter((e) => visibleRawSet.has(e.from) && visibleRawSet.has(e.to))
+    // TAB nodes survive hard filter (so we can collapse them), but may be hidden in render.
+    const tabSet = new Set(hardNodes.filter((n) => n.kind === "TAB").map((n) => n.id));
+
+    // ---- Render node set (TAB/STATE can be hidden) ----
+    const renderNodes = hardNodes
+      .filter((n) => !(hideTabs && n.kind === "TAB"))
+      .filter((n) => !(hideStates && n.kind === "STATE"));
+    const renderSet = new Set(renderNodes.map((n) => n.id));
+
+    // ---- Edges within hard universe ----
+    const hardEdges: RawEdge[] = g.edges.filter((e) => hardSet.has(e.from) && hardSet.has(e.to));
+
+    // ---- Option A: collapse TAB nodes when hidden ----
+    const tabBefore = new Map<string, number>(); // badge on destination nodes
+    const edgeMap = new Map<
+      string,
+      { from: string; to: string; count: number; sumAvg: number; sumMed: number }
+    >();
+
+    function addEdge(from: string, to: string, count: number, avg_ms: number, median_ms: number) {
+      if (!renderSet.has(from) || !renderSet.has(to)) return;
+      const k = `${from}→${to}`;
+      const cur = edgeMap.get(k) ?? { from, to, count: 0, sumAvg: 0, sumMed: 0 };
+      cur.count += count;
+      cur.sumAvg += count * avg_ms;
+      cur.sumMed += count * median_ms;
+      edgeMap.set(k, cur);
+    }
+
+    if (!hideTabs) {
+      // Keep tabs as real nodes/edges.
+      for (const e of hardEdges) {
+        if (!renderSet.has(e.from) || !renderSet.has(e.to)) continue;
+        addEdge(e.from, e.to, e.count, e.avg_ms, e.median_ms);
+      }
+    } else {
+      // 1) Keep direct edges that are already between render nodes (and not incident to TAB nodes).
+      for (const e of hardEdges) {
+        if (!renderSet.has(e.from) || !renderSet.has(e.to)) continue;
+        if (tabSet.has(e.from) || tabSet.has(e.to)) continue;
+        addEdge(e.from, e.to, e.count, e.avg_ms, e.median_ms);
+      }
+
+      // 2) Build incoming/outgoing lists for each TAB node.
+      const inToTab = new Map<string, RawEdge[]>();
+      const outFromTab = new Map<string, RawEdge[]>();
+
+      for (const e of hardEdges) {
+        // incoming: render -> TAB
+        if (tabSet.has(e.to) && renderSet.has(e.from)) {
+          const arr = inToTab.get(e.to) ?? [];
+          arr.push(e);
+          inToTab.set(e.to, arr);
+        }
+        // outgoing: TAB -> render
+        if (tabSet.has(e.from) && renderSet.has(e.to)) {
+          const arr = outFromTab.get(e.from) ?? [];
+          arr.push(e);
+          outFromTab.set(e.from, arr);
+
+          // badge: TAB happened "before" destination node
+          tabBefore.set(e.to, (tabBefore.get(e.to) ?? 0) + e.count);
+        }
+      }
+
+      // 3) Collapse (render -> TAB -> render) into (render -> render).
+      for (const t of tabSet) {
+        const ins = inToTab.get(t) ?? [];
+        const outs = outFromTab.get(t) ?? [];
+        if (ins.length === 0 || outs.length === 0) continue;
+
+        for (const ein of ins) {
+          for (const eout of outs) {
+            const from = ein.from;
+            const to = eout.to;
+            if (!renderSet.has(from) || !renderSet.has(to)) continue;
+            if (from === to) continue;
+
+            // conservative join weight
+            const w = Math.min(ein.count, eout.count);
+            if (w <= 0) continue;
+
+            // approximate latency across the hidden TAB hop
+            addEdge(from, to, w, ein.avg_ms + eout.avg_ms, ein.median_ms + eout.median_ms);
+          }
+        }
+      }
+    }
+
+    // ---- Convert edge map to list ----
+    const allVisibleEdges = Array.from(edgeMap.values()).map((x) => ({
+      from: x.from,
+      to: x.to,
+      count: x.count,
+      avg_ms: x.count > 0 ? x.sumAvg / x.count : 0,
+      median_ms: x.count > 0 ? x.sumMed / x.count : 0,
+    }));
+
+    // Keep your existing "Top edges" behavior (still a render cap)
+    const rawEdges = allVisibleEdges
       .slice()
       .sort((a, b) => b.count - a.count)
       .slice(0, topKEdges);
 
-    // ---- LEVELS: stable BFS from roots (prevents cycle inflation) ----
+    // ---- LEVELS (BFS) over rendered edges ----
     const indeg = new Map<string, number>();
-    for (const n of visibleRawNodes) indeg.set(n.id, 0);
+    for (const n of renderNodes) indeg.set(n.id, 0);
     for (const e of rawEdges) indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
 
-    let roots = visibleRawNodes.filter((n) => (indeg.get(n.id) ?? 0) === 0).map((n) => n.id);
+    let roots = renderNodes.filter((n) => (indeg.get(n.id) ?? 0) === 0).map((n) => n.id);
 
-    // If everything is in a cycle, pick a deterministic root:
     if (roots.length === 0) {
       const pick =
-        visibleRawNodes
-          .filter((n) => n.kind === "NAV" || n.kind === "TAB")
+        renderNodes
+          .filter((n) => n.kind === "NAV")
           .sort((a, b) => b.count - a.count)[0] ??
-        visibleRawNodes.sort((a, b) => b.count - a.count)[0];
+        renderNodes.sort((a, b) => b.count - a.count)[0];
 
       if (pick) roots = [pick.id];
     }
 
     const out = new Map<string, string[]>();
-    for (const n of visibleRawNodes) out.set(n.id, []);
+    for (const n of renderNodes) out.set(n.id, []);
     for (const e of rawEdges) out.get(e.from)?.push(e.to);
 
     const level = new Map<string, number>();
-    for (const n of visibleRawNodes) level.set(n.id, Infinity);
+    for (const n of renderNodes) level.set(n.id, Infinity);
     for (const r of roots) level.set(r, 0);
 
     const q: string[] = [...roots];
@@ -216,7 +310,6 @@ export default function GraphPanel() {
       for (const nx of nexts) {
         const prev = level.get(nx) ?? Infinity;
         const cand = curLv + 1;
-        // shortest distance layering
         if (cand < prev) {
           level.set(nx, cand);
           q.push(nx);
@@ -224,22 +317,19 @@ export default function GraphPanel() {
       }
     }
 
-    // Any still-unreached nodes: place near 0 but stable
-    for (const n of visibleRawNodes) {
+    for (const n of renderNodes) {
       if (!Number.isFinite(level.get(n.id) ?? Infinity)) level.set(n.id, 0);
     }
 
-    // compress levels to 0..K-1 to keep width sane
-    const uniq = Array.from(new Set(visibleRawNodes.map((n) => level.get(n.id) ?? 0))).sort((a, b) => a - b);
+    const uniq = Array.from(new Set(renderNodes.map((n) => level.get(n.id) ?? 0))).sort((a, b) => a - b);
     const compress = new Map<number, number>();
     uniq.forEach((v, i) => compress.set(v, i));
-    for (const n of visibleRawNodes) level.set(n.id, compress.get(level.get(n.id) ?? 0) ?? 0);
+    for (const n of renderNodes) level.set(n.id, compress.get(level.get(n.id) ?? 0) ?? 0);
 
     // lanes
     const lanes: string[][] = [[], [], []];
-    for (const n of visibleRawNodes) lanes[laneForKind(n.kind)].push(n.id);
+    for (const n of renderNodes) lanes[laneForKind(n.kind)].push(n.id);
 
-    // Sort within lane by level then by count
     for (const lane of lanes) {
       lane.sort((a, b) => {
         const la = level.get(a) ?? 0;
@@ -249,7 +339,6 @@ export default function GraphPanel() {
       });
     }
 
-    // layout constants (more breathing room; node height is now bounded)
     const X_GAP = 320;
     const LANE_Y = [120, 420, 700];
     const ROW_GAP = 180;
@@ -269,7 +358,7 @@ export default function GraphPanel() {
         const y = LANE_Y[laneIdx] + offsetInLevel * ROW_GAP;
 
         const safeId = toSafe.get(rawId)!;
-        const nodeMeta = visibleRawNodes.find((n) => n.id === rawId)!;
+        const nodeMeta = nodeById.get(rawId)!;
 
         ns.push({
           id: safeId,
@@ -279,6 +368,7 @@ export default function GraphPanel() {
             kind: nodeMeta.kind,
             label: nodeMeta.label,
             count: nodeMeta.count,
+            context: hideTabs ? { tabBefore: tabBefore.get(rawId) ?? 0 } : undefined,
           },
         });
       }
@@ -286,9 +376,7 @@ export default function GraphPanel() {
 
     // focus path (neighbors of clicked node)
     const focusSafe = focusNodeId;
-    const focusRaw = focusSafe
-      ? Array.from(toSafe.entries()).find(([, v]) => v === focusSafe)?.[0] ?? null
-      : null;
+    const focusRaw = focusSafe ? Array.from(toSafe.entries()).find(([, v]) => v === focusSafe)?.[0] ?? null : null;
 
     const focusNodes = new Set<string>();
     const focusEdges = new Set<string>();
@@ -303,7 +391,7 @@ export default function GraphPanel() {
       }
     }
 
-    // ---- Deterministic parallel offsets: group by (from,to) ----
+    // parallel offsets group by (from,to)
     const group = new Map<string, { e: (typeof rawEdges)[number]; idx: number }[]>();
     rawEdges.forEach((e, idx) => {
       const k = `${e.from}→${e.to}`;
@@ -314,17 +402,14 @@ export default function GraphPanel() {
 
     const offsetByIdx = new Map<number, number>();
     for (const arr of group.values()) {
-      // stable order within group: highest count first
       arr.sort((a, b) => b.e.count - a.e.count);
-
       const m = arr.length;
       for (let i = 0; i < m; i++) {
         const centered = i - (m - 1) / 2;
-        offsetByIdx.set(arr[i].idx, centered * 14); // 14px per lane
+        offsetByIdx.set(arr[i].idx, centered * 14);
       }
     }
 
-    // build edges
     const es: Edge[] = rawEdges.map((e, idx) => {
       const srcSafe = toSafe.get(e.from)!;
       const dstSafe = toSafe.get(e.to)!;
@@ -332,21 +417,16 @@ export default function GraphPanel() {
       const srcKind = kindByRaw.get(e.from) ?? "OTHER";
       const stroke = edgeColorFor(srcKind);
 
-      // thickness = frequency
       const w = clamp(2.2 + Math.log2(e.count + 1) * 1.6, 2.4, 8.2);
-
-      // opacity = speed (keep a floor)
-      const t = clamp(e.median_ms / 2500, 0, 1);
+      const t = clamp((e.median_ms ?? 0) / 2500, 0, 1);
       const opacity = clamp(0.95 - t * 0.45, 0.35, 0.98);
 
       const offset = offsetByIdx.get(idx) ?? 0;
-
       const edgeId = `${srcSafe}->${dstSafe}-${idx}`;
 
       if (focusRaw) {
         if (e.from === focusRaw || e.to === focusRaw) focusEdges.add(edgeId);
       }
-
       const dim = focusRaw && !focusEdges.has(edgeId);
 
       return {
@@ -356,7 +436,6 @@ export default function GraphPanel() {
         type: "styled",
         animated: e.count >= 6,
         interactionWidth: 22,
-        // IMPORTANT: marker styled here (clear direction)
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color: stroke,
@@ -366,8 +445,9 @@ export default function GraphPanel() {
         style: { opacity: dim ? 0.12 : 1 },
         data: {
           count: e.count,
-          median_ms: e.median_ms,
-          avg_ms: e.avg_ms,
+          median_ms: Math.round(e.median_ms ?? 0),
+          avg_ms: Math.round(e.avg_ms ?? 0),
+          p: 0,
           labelMode,
           hovered: hoverEdgeId === edgeId,
           stroke,
@@ -378,20 +458,15 @@ export default function GraphPanel() {
       };
     });
 
-    // Dim nodes when focused
     const dimmedNodes: Node[] = ns.map((n) => {
       if (!focusRaw) return n;
       const rawId = Array.from(toSafe.entries()).find(([, v]) => v === n.id)?.[0];
       const dim = rawId ? !focusNodes.has(rawId) : true;
-      return {
-        ...n,
-        style: { ...(n.style || {}), opacity: dim ? 0.18 : 1 },
-      };
+      return { ...n, style: { ...(n.style || {}), opacity: dim ? 0.18 : 1 } };
     });
 
-    // minimap coloring
     const mm = new Map<string, string>();
-    for (const rawId of visibleRawSet) {
+    for (const rawId of renderSet) {
       const k = kindByRaw.get(rawId) ?? "OTHER";
       mm.set(toSafe.get(rawId)!, edgeColorFor(k));
     }
@@ -400,6 +475,7 @@ export default function GraphPanel() {
   }, [
     graph,
     hideDom,
+    hideTabs,
     hideUnlabeledClicks,
     topKEdges,
     labelMode,
@@ -407,11 +483,9 @@ export default function GraphPanel() {
     focusNodeId,
   ]);
 
-  // When entering fullscreen, ensure we fit once after the graph is present.
   useEffect(() => {
     if (!isFullscreen) return;
     if (!rfRef.current) return;
-    // mark that we need a good fit; resize observer will execute it
     needsFitRef.current = true;
   }, [isFullscreen, nodes.length, edges.length]);
 
@@ -453,15 +527,12 @@ export default function GraphPanel() {
         >
           <Background />
 
-          {/* Controls: include a real fullscreen toggle in the bottom-left cluster */}
           <Controls showInteractive={false}>
             <ControlButton onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}>
-              {/* simple icon without extra deps */}
               <span style={{ fontSize: 14, lineHeight: 1 }}>{isFullscreen ? "⤡" : "⤢"}</span>
             </ControlButton>
           </Controls>
 
-          {/* Keep minimap visible in fullscreen so you never get lost */}
           {isFullscreen && (
             <MiniMap
               pannable
@@ -477,7 +548,7 @@ export default function GraphPanel() {
               <div className="flex items-center gap-2">
                 <button
                   className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
-                  onClick={fitAll}
+                  onClick={() => rfRef.current?.fitView({ padding: 0.2, duration: 220 })}
                 >
                   Fit
                 </button>
@@ -498,6 +569,16 @@ export default function GraphPanel() {
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={hideDom} onChange={(e) => setHideDom(e.target.checked)} />
                 Hide DOM nodes
+              </label>
+
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={hideTabs} onChange={(e) => setHideTabs(e.target.checked)} />
+                Hide tab nodes (context)
+              </label>
+
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={hideStates} onChange={(e) => setHideStates(e.target.checked)} />
+                Hide state nodes
               </label>
 
               <label className="flex items-center gap-2">
@@ -537,7 +618,9 @@ export default function GraphPanel() {
                 </select>
               </div>
 
-              <div className="text-[11px] text-white/45">Tip: click a node to “focus path” (neighbors highlighted).</div>
+              <div className="text-[11px] text-white/45">
+                Tip: click a node to “focus path” (neighbors highlighted).
+              </div>
             </div>
           </Panel>
         </ReactFlow>

@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import asyncio
+import hashlib
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -36,19 +38,51 @@ ws_mgr = WSManager()
 
 
 def action_id_for(kind: str, host: str, path: str, payload: dict) -> str:
-    # stable-ish node identity; keep it deterministic for graph merging
+    """Return a stable node id for graph merging.
+
+    Important: CLICK nodes should be keyed by semantic identity first
+    (testid / aria-label / id) and only fall back to selectors.
+    """
     if kind == "CLICK":
-        sel = str(payload.get("selector") or "")
-        return f"CLICK:{host}{path}:{sel}"
+        # Prefer stable semantic keys over CSS selectors.
+        if payload.get("testid"):
+            key = f"testid={payload.get('testid')}"
+        elif payload.get("ariaLabel"):
+            key = f"aria={payload.get('ariaLabel')}"
+        elif payload.get("id"):
+            key = f"id={payload.get('id')}"
+        else:
+            key = f"sel={payload.get('selector') or ''}"
+
+        key = scrub_text(str(key), max_len=160)
+        return f"CLICK:{host}{path}:{key}"
+
     if kind == "SHORTCUT":
-        combo = str(payload.get("combo") or "")
+        combo = scrub_text(str(payload.get("combo") or ""), max_len=80)
         return f"SHORTCUT:{combo}"
+
     if kind == "NAV":
         return f"NAV:{host}{path}"
+
     if kind == "TAB":
         return f"TAB:{host}{path}"
+
     if kind == "DOM":
         return f"DOM:{host}{path}"
+
+    if kind == "STATE":
+        # Stable state identity derived from currently-visible semantic affordances.
+        sig = payload.get("sig")
+        if not sig:
+            testids = payload.get("testids") or []
+            if isinstance(testids, list):
+                sig = "|".join([str(t) for t in testids])
+            else:
+                sig = ""
+        sig = scrub_text(str(sig), max_len=500)
+        h = hashlib.sha1(sig.encode("utf-8")).hexdigest()[:10] if sig else "empty"
+        return f"STATE:{host}{path}:{h}"
+
     return f"OTHER:{host}{path}:{kind}"
 
 
@@ -69,6 +103,17 @@ def label_for_action(kind: str, host: str, path: str, payload: dict) -> str:
         return f"Tab\n{host}{path}"
     if kind == "DOM":
         return f"DOM change\n{host}{path}"
+    if kind == "STATE":
+        testids = payload.get("testids") or []
+        preview = ""
+        if isinstance(testids, list) and len(testids) > 0:
+            shown = [scrub_text(str(t), max_len=28) for t in testids[:4]]
+            preview = ", ".join(shown)
+            if len(testids) > 4:
+                preview += f" +{len(testids) - 4}"
+        else:
+            preview = scrub_text(str(payload.get("sig") or ""), max_len=80) or "(no testids)"
+        return f"State\n{preview}\n{host}{path}"
     return f"{kind}\n{host}{path}"
 
 
@@ -100,6 +145,18 @@ def event_to_action(ev: RawEvent) -> Action:
     elif ev.type == "DOM_MUTATION":
         kind = "DOM"
         payload = {"added": ev.payload.get("added"), "removed": ev.payload.get("removed"), "attrs": ev.payload.get("attrs")}
+    elif ev.type == "STATE_SNAPSHOT":
+        kind = "STATE"
+        raw = ev.payload.get("testids") or []
+        testids = [str(t) for t in raw] if isinstance(raw, list) else []
+        testids = sorted(set(testids))
+        sig = "|".join(testids)
+        payload = {
+            "reason": ev.payload.get("reason"),
+            "testids": testids,
+            "sig": scrub_text(sig, max_len=500),
+            "n": len(testids),
+        }
     else:
         kind = "OTHER"
         payload = {}
@@ -161,8 +218,13 @@ async def start_session(req: StartSessionRequest):
     if host not in settings.allowed_hosts:
         raise HTTPException(
             status_code=400,
-            detail=f"Host not allowed: {host}. allowed_hosts={settings.allowed_hosts}"
+            detail=f"Host not allowed: {host}. allowed_hosts={settings.allowed_hosts}",
         )
+
+    # Session boundary: do NOT allow edges to connect across recorder sessions.
+    # Also prevent stale session_id during the initial burst of events from agent.start().
+    await store.set_recording(False, None)
+    await store.reset_context()
 
     agent = PlaywrightAgent(
         dom_mutation_sample_ms=settings.dom_mutation_sample_ms,
@@ -181,32 +243,6 @@ async def start_session(req: StartSessionRequest):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Playwright start failed: {repr(e)}")
-
-    await store.set_recording(True, session_id)
-    return StartSessionResponse(ok=True, session_id=session_id)
-
-    if store.recording:
-        return StartSessionResponse(ok=True, session_id=store.session_id)
-
-    url = req.url.strip()
-    host = safe_host(url)
-    if host not in settings.allowed_hosts:
-        return StartSessionResponse(ok=False, session_id=None)
-
-    agent = PlaywrightAgent(
-        dom_mutation_sample_ms=settings.dom_mutation_sample_ms,
-        allowed_hosts=settings.allowed_hosts,
-        on_event=on_event,
-    )
-    store.agent = agent
-
-    try:
-        session_id = await agent.start(url)
-    except Exception as e:
-        store.agent = None
-        print("START_SESSION_FAILED:", repr(e))
-        return StartSessionResponse(ok=False, session_id=None)
-
 
     await store.set_recording(True, session_id)
     return StartSessionResponse(ok=True, session_id=session_id)
@@ -234,9 +270,12 @@ async def get_graph():
 
 @app.get("/api/predict", response_model=PredictResponse)
 async def predict():
-    ctx = await store.get_last_action_id()
+    # Prediction context should be the latest STATE snapshot when available,
+    # since it represents the user's current "screen" / affordances.
+    ctx = await store.get_last_state_id() or await store.get_last_workflow_action_id()
+    ctx_meta = await store.get_node_meta(ctx) if ctx else None
     preds = await store.predict_next(k=5)
-    return PredictResponse(ok=True, context_node=ctx, predictions=preds)  # type: ignore
+    return PredictResponse(ok=True, context_node=ctx, context=ctx_meta, predictions=preds)  # type: ignore
 
 
 @app.post("/api/execute", response_model=ExecuteResponse)
