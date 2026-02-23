@@ -22,4 +22,6 @@ Thumbs.db
 # If it ends up inside, ignore it:
 **/playwright/.cache/
 
-.env.local
+
+# .env.local
+# i will push this so that someone's life can be easier
