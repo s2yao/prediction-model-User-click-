@@ -4,7 +4,7 @@ import { memo, useMemo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 
 type NodeData = {
-  kind: "NAV" | "TAB" | "CLICK" | "SHORTCUT" | "DOM" | "STATE" | "OTHER";
+  kind: "NAV" | "TAB" | "CLICK" | "SHORTCUT" | "KEYBOARD" | "MOUSE" | "DOM" | "STATE" | "OTHER";
   label: string;
   count: number;
 };
@@ -26,17 +26,17 @@ function parseLabel(kind: NodeData["kind"], label: string) {
 
   if (kind === "CLICK") {
     const afterBracket = l1.includes("]") ? l1.split("]").slice(1).join("]").trim() : l1;
-    const unlabeled = afterBracket.includes("(no label)");
     const parts = afterBracket.split(" / ").map((s) => s.trim()).filter(Boolean);
-
-    const human = unlabeled ? "unlabeled element" : (parts[0] || afterBracket || "Click");
-    const hint = unlabeled ? "" : (parts[1] ? `testid=${parts[1]}` : "");
+    const human = parts[0] || afterBracket || "Click";
+    const hint = parts[1] ? `testid=${parts[1]}` : "";
     return { type: "Click", human, hint, path: l2 };
   }
 
   if (kind === "NAV") return { type: "Navigate", human: l2 || l1, hint: "", path: l2 };
   if (kind === "TAB") return { type: "Tab (context)", human: "tab focused", hint: "", path: l2 || l1 };
   if (kind === "DOM") return { type: "DOM (context)", human: "DOM change", hint: "", path: l2 };
+  if (kind === "MOUSE") return { type: "Mouse (context)", human: "mouse input", hint: "", path: l2 };
+  if (kind === "KEYBOARD") return { type: "Keyboard (context)", human: "keyboard input", hint: "", path: l2 };
   if (kind === "STATE") return { type: "State", human: l2 || "(no affordances)", hint: "", path: l3 || "" };
   if (kind === "SHORTCUT") return { type: "Shortcut", human: l1 || l2, hint: "", path: l2 || l3 };
 
@@ -46,7 +46,7 @@ function parseLabel(kind: NodeData["kind"], label: string) {
 function ActionNode({ data }: NodeProps<NodeData>) {
   const parsed = useMemo(() => parseLabel(data.kind, data.label), [data.kind, data.label]);
 
-  const isContext = data.kind === "DOM" || data.kind === "TAB";
+  const isContext = data.kind === "DOM" || data.kind === "TAB" || data.kind === "MOUSE" || data.kind === "KEYBOARD";
 
   const box =
     data.kind === "NAV"

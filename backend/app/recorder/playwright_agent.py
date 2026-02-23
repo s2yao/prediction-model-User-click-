@@ -216,9 +216,17 @@ INJECTED_SCRIPT = r"""
   document.addEventListener("keydown", (e) => {
     if (isTextInputTarget(e.target)) return;
     const combo = safeKeyCombo(e);
-    if (!combo) return;
-    emit("KEY_SHORTCUT", { combo });
-    schedule_state_snapshot("after_shortcut", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
+    if (combo) {
+      emit("KEY_SHORTCUT", { combo });
+      schedule_state_snapshot("after_shortcut", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
+      return;
+    }
+
+    // Record non-text key presses as keyboard input.
+    const key = (e && e.key) ? String(e.key) : null;
+    if (!key) return;
+    emit("KEY_DOWN", { key });
+    schedule_state_snapshot("after_key", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
   }, true);
 
   const origPush = history.pushState;

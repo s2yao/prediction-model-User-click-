@@ -23,6 +23,11 @@ WORKFLOW_KINDS = {"CLICK", "SHORTCUT", "NAV"}
 STATE_KIND = "STATE"
 
 
+def _state_scoped_id(prefix: str, state_id: str) -> str:
+    """Create a stable per-state node id for context aggregation."""
+    return f"{prefix}@{state_id}"
+
+
 def is_workflow_kind(kind: str) -> bool:
     return kind in WORKFLOW_KINDS
 
@@ -77,8 +82,52 @@ class AppStore:
             if len(self.actions) > self.max_events:
                 self.actions = self.actions[-self.max_events :]
 
-            # Always track nodes (including context nodes).
+            # --- Context aggregation per STATE ---
+            last_state_id = self._last_state_id
+            last_state_ts = self._last_state_ts
+
+            def touch_state_scoped(kind: str, label: str) -> Optional[str]:
+                if not last_state_id:
+                    return None
+                nid = _state_scoped_id(kind, last_state_id)
+                self.graph.touch_node(nid, label, kind)
+                if last_state_ts is not None:
+                    dt = max(0, act.ts - last_state_ts)
+                    self.graph.add_edge(last_state_id, nid, dt)
+                return nid
+
+            # DOM mutations: aggregate per state.
+            if act.kind == "DOM":
+                touch_state_scoped("DOM", act.label)
+
+                self._last_action_id = act.id
+                self._last_action_ts = act.ts
+                return
+
+            # CLICK: add per-state "mouse input" node.
+            if act.kind == "CLICK":
+                touch_state_scoped("MOUSE", f"Mouse input\n{act.host}{act.path}")
+
+            # SHORTCUT: add per-state "keyboard input" node.
+            if act.kind == "SHORTCUT":
+                touch_state_scoped("KEYBOARD", f"Keyboard input\n{act.host}{act.path}")
+
+            # Plain KEYBOARD events: aggregate per state (no per-key nodes).
+            if act.kind == "KEYBOARD":
+                touch_state_scoped("KEYBOARD", f"Keyboard input\n{act.host}{act.path}")
+
+                self._last_action_id = act.id
+                self._last_action_ts = act.ts
+                return
+
+            # Always track the actual action node (including TAB/CLICK/NAV/etc).
             self.graph.touch_node(act.id, act.label, act.kind)
+
+            # TAB events: connect from current STATE so tab changes are not isolated.
+            if act.kind == "TAB":
+                if last_state_id is not None and last_state_ts is not None:
+                    dt = max(0, act.ts - last_state_ts)
+                    self.graph.add_edge(last_state_id, act.id, dt)
 
             # STATE snapshots: update state context and (optionally) connect the
             # most recent workflow action to the post-action state.
