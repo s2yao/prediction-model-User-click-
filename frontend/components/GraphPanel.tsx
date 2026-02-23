@@ -60,7 +60,7 @@ export default function GraphPanel() {
 
   // UI controls
   const [hideDom, setHideDom] = useState(true);
-  const [hideTabs, setHideTabs] = useState(true);
+  const [hideTabs, setHideTabs] = useState(false);
   const [topKEdges, setTopKEdges] = useState(60);
   const [labelMode, setLabelMode] = useState<"none" | "n" | "auto" | "full">(
     "auto"
@@ -311,7 +311,9 @@ export default function GraphPanel() {
       .filter((n) => (indeg.get(n.id) ?? 0) === 0)
       .map((n) => n.id);
 
-    if (roots.length === 0) {
+    if (roots.length === renderNodes.length) {
+      roots = [];
+    } else if (roots.length === 0) {
       const pick =
         renderNodes
           .filter((n) => n.kind === "NAV")
