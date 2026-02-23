@@ -9,9 +9,9 @@ export default function DemoPage() {
     () => [
       { id: "a1", name: "Alpha" },
       { id: "b2", name: "Beta" },
-      { id: "c3", name: "Gamma" }
+      { id: "c3", name: "Gamma" },
     ],
-    []
+    [],
   );
 
   const [selected, setSelected] = useState<Item | null>(null);
@@ -19,7 +19,11 @@ export default function DemoPage() {
   const [status, setStatus] = useState<string>("Idle");
 
   return (
-    <div className="min-h-screen bg-black text-white p-6">
+    <div
+      className="min-h-screen bg-black text-white p-6"
+      data-testid="background"
+      aria-label="Background clicked"
+    >
       <div className="max-w-3xl mx-auto space-y-4">
         <h1 className="text-2xl font-semibold">Demo Workflow Page</h1>
 
@@ -93,7 +97,8 @@ export default function DemoPage() {
           <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
             <h2 className="font-medium">Step 3: Confirm</h2>
             <div className="text-sm text-white/70">
-              You’re about to submit: <span className="text-white">{selected?.name}</span>
+              You’re about to submit:{" "}
+              <span className="text-white">{selected?.name}</span>
             </div>
 
             <div className="flex gap-2">
@@ -124,7 +129,8 @@ export default function DemoPage() {
         )}
 
         <div className="text-xs text-white/50">
-          Tip: Use the recorder UI to start a session on this page, then click through steps.
+          Tip: Use the recorder UI to start a session on this page, then click
+          through steps.
         </div>
       </div>
     </div>

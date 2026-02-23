@@ -197,21 +197,32 @@ INJECTED_SCRIPT = r"""
     schedule_state_snapshot("after_click", STATE_SNAPSHOT_CONFIG.delays.postActionMs);
   }, true);
 
-  document.addEventListener("pointerdown", (e) => {
+    document.addEventListener("pointerdown", (e) => {
     const path = (typeof e.composedPath === "function") ? e.composedPath() : null;
-    const target = (path && path[0] && path[0].nodeType === 1) ? path[0] : e.target;
+    const raw = (path && path[0] && path[0].nodeType === 1) ? path[0] : e.target;
+
+    // Pick a better element to represent the click:
+    // 1) closest element with stable identifiers
+    // 2) otherwise closest "clickable" semantic element
+    // 3) fallback to raw
+    const el =
+        (raw && raw.closest
+        ? (raw.closest('[data-testid],[aria-label],[id]') ||
+            raw.closest('button,a,[role="button"],input,select,textarea,label,[onclick]') ||
+            raw)
+        : raw);
 
     emit("POINTER_DOWN", {
-      button: e.button,
-      x: Math.round(e.clientX),
-      y: Math.round(e.clientY),
-      selector: stableSelector(target),
-      tag: target && target.tagName ? String(target.tagName).toLowerCase() : null,
-      ariaLabel: target && target.getAttribute ? target.getAttribute("aria-label") : null,
-      testid: target && target.getAttribute ? target.getAttribute("data-testid") : null,
-      id: target && target.id ? target.id : null
+        button: e.button,
+        x: Math.round(e.clientX),
+        y: Math.round(e.clientY),
+        selector: stableSelector(el),
+        tag: el && el.tagName ? String(el.tagName).toLowerCase() : null,
+        ariaLabel: el && el.getAttribute ? el.getAttribute("aria-label") : null,
+        testid: el && el.getAttribute ? el.getAttribute("data-testid") : null,
+        id: el && el.id ? el.id : null
     });
-  }, true);
+    }, true);
 
   document.addEventListener("keydown", (e) => {
     if (isTextInputTarget(e.target)) return;

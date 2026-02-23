@@ -59,12 +59,13 @@ export default function GraphPanel() {
   const rfRef = useRef<ReactFlowInstance | null>(null);
 
   // UI controls
-  const [hideDom, setHideDom] = useState(false);
-  const [hideTabs, setHideTabs] = useState(false);
+  const [hideDom, setHideDom] = useState(true);
+  const [hideTabs, setHideTabs] = useState(true);
   const [topKEdges, setTopKEdges] = useState(60);
   const [labelMode, setLabelMode] = useState<"none" | "n" | "auto" | "full">(
     "auto"
   );
+  const [hideMouse, setHideMouse] = useState(true);
 
   // interactions
   const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
@@ -179,7 +180,12 @@ export default function GraphPanel() {
 
     // ---- Hard filters (remove from universe) ----
     const hardNodes = g.nodes
-      .filter((n) => !(hideDom && n.kind === "DOM"));
+      .filter((n) => !(hideDom && n.kind === "DOM"))
+      .filter((n) => !(hideMouse && n.kind === "MOUSE"))
+      .filter((n) => {
+        if (n.kind !== "CLICK") return true;
+        return !n.label.includes("(no label)");
+      });
 
     const hardSet = new Set(hardNodes.map((n) => n.id));
 
@@ -190,7 +196,7 @@ export default function GraphPanel() {
 
     // ---- Render node set (TAB/STATE can be hidden) ----
     const renderNodes = hardNodes
-      .filter((n) => !(hideTabs && n.kind === "TAB"));
+      .filter((n) => !(hideTabs && n.kind === "TAB"))
     const renderSet = new Set(renderNodes.map((n) => n.id));
 
     // ---- Edges within hard universe ----
@@ -363,6 +369,7 @@ export default function GraphPanel() {
       });
     }
 
+    
     const X_GAP = 560;
     const LANE_Y = [200, 680, 1160];
     const ROW_GAP = 320;
@@ -448,7 +455,7 @@ export default function GraphPanel() {
       const opacity = clamp(0.97 - t * 0.45, 0.40, 0.98);
 
       const offset = offsetByIdx.get(idx) ?? 0;
-      const edgeId = `${srcSafe}->${dstSafe}-${idx}`;
+      const edgeId = `${srcSafe}->${dstSafe}`;
 
       if (focusRaw) {
         if (e.from === focusRaw || e.to === focusRaw) focusEdges.add(edgeId);
@@ -593,81 +600,110 @@ export default function GraphPanel() {
         >
           <Background />
 
-          {/* fullscreen panel */}
-          <Panel position="top-right">
-            <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/40 p-3 text-xs text-white/80">
-              <div className="flex items-center gap-2">
-                <button
-                  className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
-                  onClick={fitAll}
+          {/*  full screen button in non fullscreen */}
+          {!isFullscreen && (
+            <Panel position="bottom-left">
+              <button
+                onClick={toggleFullscreen}
+                aria-label="Enter fullscreen"
+                className="rounded-lg border border-white/10 bg-black/40 px-2 py-2 text-white/80 backdrop-blur hover:bg-white/10 hover:text-white transition"
+              >
+                {/* minimalist fullscreen icon */}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="opacity-90"
                 >
-                  Fit
-                </button>
-                <button
-                  className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
-                  onClick={toggleFullscreen}
-                >
-                  {isFullscreen ? "Exit FS" : "Fullscreen"}
-                </button>
-                <button
-                  className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
-                  onClick={() => setFocusNodeId(null)}
-                >
-                  Clear focus
-                </button>
+                  <path
+                    d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </Panel>
+          )}
+
+          {/* fullscreen */}
+          {isFullscreen && (
+            <Panel position="top-right">
+              <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/40 p-3 text-xs text-white/80">
+                <div className="flex items-center gap-2">
+                  <button
+                    className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
+                    onClick={fitAll}
+                  >
+                    Fit
+                  </button>
+                  <button
+                    className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
+                    onClick={toggleFullscreen}
+                  >
+                    {isFullscreen ? "Exit FS" : "Fullscreen"}
+                  </button>
+                  <button
+                    className="rounded-lg border border-white/10 bg-white/10 hover:bg-white/15 px-2 py-1"
+                    onClick={() => setFocusNodeId(null)}
+                  >
+                    Clear focus
+                  </button>
+                </div>
+
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={hideDom}
+                    onChange={(e) => setHideDom(e.target.checked)}
+                  />
+                  Hide DOM nodes
+                </label>
+
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={hideTabs}
+                    onChange={(e) => setHideTabs(e.target.checked)}
+                  />
+                  Hide tab nodes (context)
+                </label>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-white/70">Top edges</div>
+                  <input
+                    className="w-[140px]"
+                    type="range"
+                    min={10}
+                    max={160}
+                    step={5}
+                    value={topKEdges}
+                    onChange={(e) => setTopKEdges(Number(e.target.value))}
+                  />
+                  <div className="text-white/60 w-[28px] text-right">{topKEdges}</div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-white/70">Edge labels</div>
+                  <select
+                    className="rounded-lg border border-white/10 bg-black/40 px-2 py-1"
+                    value={labelMode}
+                    onChange={(e) => setLabelMode(e.target.value as any)}
+                  >
+                    <option value="none">none</option>
+                    <option value="n">n</option>
+                    <option value="auto">auto</option>
+                    <option value="full">full</option>
+                  </select>
+                </div>
+
+                <div className="text-[11px] text-white/45">
+                  Tip: click a node to “focus path” (neighbors highlighted). Current state has a green outline.
+                </div>
               </div>
-
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={hideDom}
-                  onChange={(e) => setHideDom(e.target.checked)}
-                />
-                Hide DOM nodes
-              </label>
-
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={hideTabs}
-                  onChange={(e) => setHideTabs(e.target.checked)}
-                />
-                Hide tab nodes (context)
-              </label>
-
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-white/70">Top edges</div>
-                <input
-                  className="w-[140px]"
-                  type="range"
-                  min={10}
-                  max={160}
-                  step={5}
-                  value={topKEdges}
-                  onChange={(e) => setTopKEdges(Number(e.target.value))}
-                />
-                <div className="text-white/60 w-[28px] text-right">{topKEdges}</div>
-              </div>
-
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-white/70">Edge labels</div>
-                <select
-                  className="rounded-lg border border-white/10 bg-black/40 px-2 py-1"
-                  value={labelMode}
-                  onChange={(e) => setLabelMode(e.target.value as any)}
-                >
-                  <option value="none">none</option>
-                  <option value="n">n</option>
-                  <option value="auto">auto</option>
-                  <option value="full">full</option>
-                </select>
-              </div>
-
-              <div className="text-[11px] text-white/45">
-                Tip: click a node to “focus path” (neighbors highlighted). Current state has a green outline.
-              </div>
-            </div>
-          </Panel>
+            </Panel>
+          )}
         </ReactFlow>
       </div>
 
