@@ -7,6 +7,7 @@ EventType = Literal[
     "PAGE_READY",
     "POINTER_DOWN",
     "KEY_SHORTCUT",
+    "KEY_DOWN",
     "URL_CHANGED",
     "NAV_COMMITTED",
     "TAB_CREATED",
@@ -15,7 +16,17 @@ EventType = Literal[
     "STATE_SNAPSHOT",
 ]
 
-ActionKind = Literal["CLICK", "SHORTCUT", "NAV", "TAB", "DOM", "STATE", "OTHER"]
+ActionKind = Literal[
+    "CLICK",
+    "SHORTCUT",
+    "KEYBOARD",
+    "MOUSE",
+    "NAV",
+    "TAB",
+    "DOM",
+    "STATE",
+    "OTHER",
+]
 
 
 class RawEvent(BaseModel):

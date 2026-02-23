@@ -61,6 +61,10 @@ def action_id_for(kind: str, host: str, path: str, payload: dict) -> str:
         combo = scrub_text(str(payload.get("combo") or ""), max_len=80)
         return f"SHORTCUT:{combo}"
 
+    if kind == "KEYBOARD":
+        key = scrub_text(str(payload.get("key") or ""), max_len=40)
+        return f"KEY:{key}"
+
     if kind == "NAV":
         return f"NAV:{host}{path}"
 
@@ -93,10 +97,14 @@ def label_for_action(kind: str, host: str, path: str, payload: dict) -> str:
         t = scrub_text(str(payload.get("testid") or ""))
         i = scrub_text(str(payload.get("id") or ""))
         bits = [b for b in [a, t, i] if b]
-        hint = " / ".join(bits) if bits else "(no label)"
+        selector = scrub_text(str(payload.get("selector") or ""), max_len=90)
+        hint = " / ".join(bits) if bits else (selector or "(unknown element)")
         return f"Click [{role}] {hint}\n{host}{path}"
     if kind == "SHORTCUT":
         return f"Shortcut {payload.get('combo')}\n{host}{path}"
+    if kind == "KEYBOARD":
+        k = scrub_text(str(payload.get("key") or ""), max_len=40)
+        return f"Keyboard {k}\n{host}{path}"
     if kind == "NAV":
         return f"Navigate\n{host}{path}"
     if kind == "TAB":
@@ -135,6 +143,9 @@ def event_to_action(ev: RawEvent) -> Action:
     elif ev.type == "KEY_SHORTCUT":
         kind = "SHORTCUT"
         payload = {"combo": ev.payload.get("combo")}
+    elif ev.type == "KEY_DOWN":
+        kind = "KEYBOARD"
+        payload = {"key": ev.payload.get("key")}
     elif ev.type in ("NAV_COMMITTED", "URL_CHANGED"):
         kind = "NAV"
         # store full url for replay; still privacy-sensitive, but this is local demo
