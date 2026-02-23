@@ -562,9 +562,6 @@ export default function GraphPanel() {
 
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium">Workflow Graph</div>
-        <div className="text-xs text-white/60">
-          {graph ? `${graph.nodes.length} nodes, ${graph.edges.length} edges` : "—"}
-        </div>
       </div>
 
       <div
@@ -604,7 +601,7 @@ export default function GraphPanel() {
 
           {/*  full screen button in non fullscreen */}
           {!isFullscreen && (
-            <Panel position="bottom-left">
+            <Panel position="top-right">
               <button
                 onClick={toggleFullscreen}
                 aria-label="Enter fullscreen"

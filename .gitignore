@@ -21,3 +21,5 @@ Thumbs.db
 # Playwright browsers cache (optional; usually stored outside repo)
 # If it ends up inside, ignore it:
 **/playwright/.cache/
+
+.env.local

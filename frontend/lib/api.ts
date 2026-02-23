@@ -1,5 +1,7 @@
-const BASE = "http://localhost:8000";
-
+const BASE =
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  "http://localhost:8000";
+  
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
