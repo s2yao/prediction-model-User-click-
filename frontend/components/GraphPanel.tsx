@@ -60,7 +60,7 @@ export default function GraphPanel() {
 
   // UI controls
   const [hideDom, setHideDom] = useState(true);
-  const [hideTabs, setHideTabs] = useState(false);
+  const [hideTabs, setHideTabs] = useState(true);
   const [topKEdges, setTopKEdges] = useState(60);
   const [labelMode, setLabelMode] = useState<"none" | "n" | "auto" | "full">(
     "auto"
