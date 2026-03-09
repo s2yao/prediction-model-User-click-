@@ -14,10 +14,12 @@ This repo demonstrates:
 ---
 
 ### How to use
-- Click start session to open http://localhost:3000/demo, where all user action will be recorded
+- Click start session to open http://localhost:3000/demo, where all user actions will be recorded
 - Recorded actions are displayed in Workflow Graph (go fullscreen) and Live Timeline
 - Next-step prediction is made using Markov Baseline
 - "Most likely next step" is shown, based on the user's number of clicks in each state
+- Every state has a unique DOM, each representing one screen
+- Yellow arrows indicate forward progression, while green arrows indicate backward movement
 
 ## Prereqs
 - Node.js 20+
